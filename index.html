@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Lost Village - Explore</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;touch-action:none;font-family:system-ui,sans-serif;color:#fff;-webkit-user-select:none;user-select:none}
+canvas{display:block;width:100%;height:100%}
+#msg{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:rgba(0,0,0,.8);text-align:center;font-size:18px;padding:24px;z-index:5}
+#msg small{opacity:.7;font-size:14px;line-height:1.5}
+#msg button,#msg label{background:#fff;color:#000;border:0;border-radius:8px;padding:12px 28px;font-size:17px;cursor:pointer}
+#bar{width:220px;height:6px;background:#333;border-radius:3px;overflow:hidden}
+#bar i{display:block;height:100%;width:0;background:#fff}
+#joy{position:fixed;width:120px;height:120px;margin:-60px 0 0 -60px;border:2px solid rgba(255,255,255,.4);border-radius:50%;display:none;z-index:3;pointer-events:none}
+#knob{position:absolute;left:35px;top:35px;width:50px;height:50px;border-radius:50%;background:rgba(255,255,255,.45)}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<div id="msg"><div id="t">Loading map…</div><div id="bar"><i id="p"></i></div></div>
+<div id="joy"><div id="knob"></div></div>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+
+const MODEL='lost_village_level0.glb';
+const S=20;                       // map units per metre
+const EYE=1.7*S, STEP=0.7*S, RADIUS=0.4*S, WALK=2.2*S, RUN=4.5*S;
+const touch='ontouchstart' in window||navigator.maxTouchPoints>0;
+
+const $=id=>document.getElementById(id);
+const msg=$('msg'),t=$('t'),bar=$('bar'),pb=$('p');
+
+const renderer=new THREE.WebGLRenderer({antialias:false,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+renderer.setSize(innerWidth,innerHeight);
+document.body.prepend(renderer.domElement);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x8ea0b5);
+const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,1,5000);
+camera.rotation.order='YXZ';
+scene.add(new THREE.HemisphereLight(0xdde6ff,0x555555,2.2));
+const sun=new THREE.DirectionalLight(0xffffff,1.6);sun.position.set(300,600,200);scene.add(sun);
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix()});
+
+let collidables=[],bb=new THREE.Box3(),spawn=new THREE.Vector3(),ready=false;
+const pos=new THREE.Vector3();let vy=0,yaw=0,pitch=0;
+const ray=new THREE.Raycaster(),DOWN=new THREE.Vector3(0,-1,0);
+
+function groundHit(x,z,fromY){
+  ray.set(new THREE.Vector3(x,fromY,z),DOWN);ray.near=0;ray.far=bb.max.y-bb.min.y+2000;
+  const h=ray.intersectObjects(collidables,false);return h.length?h[0]:null;
+}
+
+function setup(root){
+  scene.add(root);root.updateMatrixWorld(true);
+  const foliage=/tree|bush|grass|plant|leaf|leaves|fern|flower|weed/i;
+  root.traverse(o=>{
+    if(!o.isMesh)return;
+    const m=Array.isArray(o.material)?o.material[0]:o.material;
+    if(foliage.test(o.name)||(o.parent&&foliage.test(o.parent.name))||(m&&m.transparent))return;
+    collidables.push(o);
+  });
+  bb.setFromObject(root);
+  // find ground level: median of downward hits on a grid
+  const N=21,hits=[];
+  for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+    const x=bb.min.x+(bb.max.x-bb.min.x)*(i+.5)/N,z=bb.min.z+(bb.max.z-bb.min.z)*(j+.5)/N;
+    const h=groundHit(x,z,bb.max.y+10);if(h)hits.push({x,z,y:h.point.y});
+  }
+  if(!hits.length){spawn.set((bb.min.x+bb.max.x)/2,bb.max.y,(bb.min.z+bb.max.z)/2);return}
+  const ys=hits.map(h=>h.y).sort((a,b)=>a-b),med=ys[ys.length>>1];
+  const cx=(bb.min.x+bb.max.x)/2,cz=(bb.min.z+bb.max.z)/2;
+  hits.sort((a,b)=>Math.hypot(a.x-cx,a.z-cz)-Math.hypot(b.x-cx,b.z-cz));
+  const s=hits.find(h=>Math.abs(h.y-med)<0.5*S)||hits[0];
+  spawn.set(s.x,s.y,s.z);
+}
+
+const keys={};
+let mv={x:0,y:0},look={x:0,y:0};
+addEventListener('keydown',e=>{keys[e.code]=true});
+addEventListener('keyup',e=>{keys[e.code]=false});
+document.addEventListener('mousemove',e=>{
+  if(document.pointerLockElement!==renderer.domElement)return;
+  yaw-=e.movementX*0.0022;pitch=Math.max(-1.45,Math.min(1.45,pitch-e.movementY*0.0022));
+});
+
+// touch: left half = move joystick, right half = look
+const joy=$('joy'),knob=$('knob');let mvId=null,lkId=null,mo={x:0,y:0},lo={x:0,y:0};
+addEventListener('touchstart',e=>{
+  if(!ready)return;
+  for(const c of e.changedTouches){
+    if(c.clientX<innerWidth/2&&mvId===null){mvId=c.identifier;mo={x:c.clientX,y:c.clientY};
+      joy.style.left=c.clientX+'px';joy.style.top=c.clientY+'px';joy.style.display='block'}
+    else if(c.clientX>=innerWidth/2&&lkId===null){lkId=c.identifier;lo={x:c.clientX,y:c.clientY}}
+  }e.preventDefault();
+},{passive:false});
+addEventListener('touchmove',e=>{
+  for(const c of e.changedTouches){
+    if(c.identifier===mvId){let dx=(c.clientX-mo.x)/50,dy=(c.clientY-mo.y)/50;const l=Math.hypot(dx,dy);if(l>1){dx/=l;dy/=l}
+      mv.x=dx;mv.y=dy;knob.style.transform=`translate(${dx*35}px,${dy*35}px)`}
+    else if(c.identifier===lkId){yaw-=(c.clientX-lo.x)*0.005;pitch=Math.max(-1.45,Math.min(1.45,pitch-(c.clientY-lo.y)*0.005));lo={x:c.clientX,y:c.clientY}}
+  }e.preventDefault();
+},{passive:false});
+const tend=e=>{for(const c of e.changedTouches){
+  if(c.identifier===mvId){mvId=null;mv.x=mv.y=0;joy.style.display='none';knob.style.transform=''}
+  if(c.identifier===lkId)lkId=null}};
+addEventListener('touchend',tend);addEventListener('touchcancel',tend);
+
+function start(){
+  msg.style.display='none';
+  if(!touch)renderer.domElement.requestPointerLock();
+}
+renderer.domElement.addEventListener('click',()=>{if(ready&&!touch&&document.pointerLockElement!==renderer.domElement)renderer.domElement.requestPointerLock()});
+document.addEventListener('pointerlockchange',()=>{
+  if(ready&&!touch&&document.pointerLockElement!==renderer.domElement){msg.style.display='flex'}
+});
+
+const fwd=new THREE.Vector3(),rgt=new THREE.Vector3(),mdir=new THREE.Vector3();
+function update(dt){
+  let f=0,r=0;
+  if(keys.KeyW||keys.ArrowUp)f+=1; if(keys.KeyS||keys.ArrowDown)f-=1;
+  if(keys.KeyD||keys.ArrowRight)r+=1; if(keys.KeyA||keys.ArrowLeft)r-=1;
+  f+=-mv.y;r+=mv.x;
+  const l=Math.hypot(f,r);if(l>1){f/=l;r/=l}
+  const speed=(keys.ShiftLeft||keys.ShiftRight||Math.hypot(mv.x,mv.y)>0.9)?RUN:WALK;
+  if(l>0.01){
+    fwd.set(-Math.sin(yaw),0,-Math.cos(yaw));rgt.set(Math.cos(yaw),0,-Math.sin(yaw));
+    mdir.set(0,0,0).addScaledVector(fwd,f).addScaledVector(rgt,r);
+    const dist=speed*dt;mdir.normalize();
+    // wall check
+    ray.set(new THREE.Vector3(pos.x,pos.y+0.9*S,pos.z),mdir);ray.near=0;ray.far=RADIUS+dist;
+    const w=ray.intersectObjects(collidables,false);
+    if(w.length&&w[0].face){
+      const n=w[0].face.normal.clone().transformDirection(w[0].object.matrixWorld);n.y=0;
+      if(n.lengthSq()>1e-4){n.normalize();const d=mdir.dot(n);if(d<0)mdir.addScaledVector(n,-d)}
+      ray.set(new THREE.Vector3(pos.x,pos.y+0.9*S,pos.z),mdir.clone().normalize());ray.far=RADIUS+dist;
+      if(mdir.lengthSq()<1e-4||ray.intersectObjects(collidables,false).length)mdir.set(0,0,0);
+    }
+    pos.x+=mdir.x*dist;pos.z+=mdir.z*dist;
+  }
+  // ground / gravity
+  const g=groundHit(pos.x,pos.z,pos.y+STEP);
+  if(g){
+    const gy=g.point.y;
+    if(pos.y>gy+0.05*S){vy-=9.8*S*dt;pos.y=Math.max(gy,pos.y+vy*dt);if(pos.y===gy)vy=0}
+    else{vy=0;pos.y+=(gy-pos.y)*Math.min(1,dt*15)}
+  }else{vy-=9.8*S*dt;pos.y+=vy*dt;if(pos.y<bb.min.y-100*S){pos.copy(spawn);vy=0}}
+  camera.position.set(pos.x,pos.y+EYE,pos.z);
+  camera.rotation.set(pitch,yaw,0);
+}
+
+let last=performance.now();
+renderer.setAnimationLoop(()=>{
+  const n=performance.now(),dt=Math.min(0.05,(n-last)/1000);last=n;
+  if(ready&&msg.style.display==='none')update(dt);
+  renderer.render(scene,camera);
+});
+
+function onLoaded(gltf){
+  setup(gltf.scene);pos.copy(spawn);
+  camera.position.set(pos.x,pos.y+EYE,pos.z);
+  ready=true;bar.style.display='none';
+  t.innerHTML='<button id="go">'+(touch?'Tap to explore':'Click to explore')+'</button><small>'+
+   (touch?'Left side: move &nbsp;|&nbsp; Right side: look':'WASD: move &nbsp;|&nbsp; Mouse: look &nbsp;|&nbsp; Shift: run &nbsp;|&nbsp; Esc: pause')+'</small>';
+  $('go').onclick=start;
+}
+function loadURL(u){
+  new GLTFLoader().load(u,onLoaded,e=>{if(e.lengthComputable)pb.style.width=(100*e.loaded/e.total)+'%'},
+  err=>{
+    bar.style.display='none';
+    t.innerHTML='Map load nahi hua.<br><small>Folder ko local server se kholo (python3 -m http.server), ya GLB file yaha choose karo:</small><br><br><label>Choose GLB<input id="f" type="file" accept=".glb" hidden></label>';
+    $('f').onchange=ev=>{const f=ev.target.files[0];if(f){t.textContent='Loading map…';bar.style.display='block';loadURL(URL.createObjectURL(f))}};
+    console.error(err);
+  });
+}
+loadURL(MODEL);
+</script>
+</body>
+</html>
