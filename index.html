@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="hi">
 <head>
@@ -91,7 +92,7 @@ document.addEventListener('mousemove',e=>{
 // touch: left half = move joystick, right half = look
 const joy=$('joy'),knob=$('knob');let mvId=null,lkId=null,mo={x:0,y:0},lo={x:0,y:0};
 addEventListener('touchstart',e=>{
-  if(!ready)return;
+  if(!ready||msg.style.display!=='none')return;
   for(const c of e.changedTouches){
     if(c.clientX<innerWidth/2&&mvId===null){mvId=c.identifier;mo={x:c.clientX,y:c.clientY};
       joy.style.left=c.clientX+'px';joy.style.top=c.clientY+'px';joy.style.display='block'}
@@ -99,6 +100,7 @@ addEventListener('touchstart',e=>{
   }e.preventDefault();
 },{passive:false});
 addEventListener('touchmove',e=>{
+  if(msg.style.display!=='none')return;
   for(const c of e.changedTouches){
     if(c.identifier===mvId){let dx=(c.clientX-mo.x)/50,dy=(c.clientY-mo.y)/50;const l=Math.hypot(dx,dy);if(l>1){dx/=l;dy/=l}
       mv.x=dx;mv.y=dy;knob.style.transform=`translate(${dx*35}px,${dy*35}px)`}
